@@ -1,0 +1,32 @@
+{
+  "name": "hybridbox",
+  "version": "0.1.0",
+  "description": "Remote-control Claude Code on Windows from WeChat (via WeChat ClawBot / ilink Bot API).",
+  "type": "module",
+  "bin": {
+    "hybridbox": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/cli.ts",
+    "start": "node dist/cli.js start",
+    "setup": "tsx src/cli.ts setup",
+    "cli": "tsx src/cli.ts",
+    "test": "npm run build && node selftest.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/qrcode": "^1.5.5",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "license": "MIT"
+}
