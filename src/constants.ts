@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 
 /** HybridBox version. */
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
 /** WeChat ilink Bot API base. Reverse-engineered, may change. */
 export const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";

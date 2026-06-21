@@ -1,6 +1,6 @@
 {
   "name": "hybridbox",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Remote-control Claude Code on Windows from WeChat (via WeChat ClawBot / ilink Bot API).",
   "type": "module",
   "bin": {
