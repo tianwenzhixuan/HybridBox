@@ -11,8 +11,9 @@
     "dev": "tsx watch src/cli.ts",
     "start": "node dist/cli.js start",
     "setup": "tsx src/cli.ts setup",
+    "add-user": "tsx src/cli.ts add-user",
     "cli": "tsx src/cli.ts",
-    "test": "npm run build && node selftest.mjs"
+    "test": "npm run build && node selftest.mjs && node multitest.mjs"
   },
   "engines": {
     "node": ">=18"

@@ -3,6 +3,7 @@ import assert from "node:assert";
 import { splitMessage } from "./dist/wechat/split.js";
 import { parseLine, createLineBuffer } from "./dist/claude/parser.js";
 import { aesEcbEncrypt, aesEcbDecrypt, randomAesKey, md5Hex } from "./dist/wechat/crypto.js";
+import { parseKey } from "./dist/wechat/cdn.js";
 import { detectFilePaths } from "./dist/engine.js";
 
 let passed = 0;
@@ -71,6 +72,14 @@ const dec = aesEcbDecrypt(enc, key);
 assert.ok(dec.equals(plain), "AES round trip must match");
 assert.equal(md5Hex(plain).length, 32);
 ok("crypto: AES-128-ECB round trip + md5");
+
+// --- parseKey: all three aes_key encodings must yield the same 16-byte key ---
+const k16 = randomAesKey();
+const kHex = k16.toString("hex");
+assert.ok(parseKey(kHex).equals(k16), "parseKey: raw hex");
+assert.ok(parseKey(k16.toString("base64")).equals(k16), "parseKey: base64 of 16 bytes");
+assert.ok(parseKey(Buffer.from(kHex).toString("base64")).equals(k16), "parseKey: base64-of-hex");
+ok("crypto: parseKey decodes hex / base64 / base64-of-hex");
 
 // --- detectFilePaths ---
 const text = "结果保存在 D:\\Claude\\proj\\out.txt 和 file:///C:/tmp/report.pdf 里。";

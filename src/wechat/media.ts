@@ -10,6 +10,7 @@ import {
   type CDNMedia,
   type InboundMessage,
   type MessageItem,
+  type UploadMedia,
   type WeixinMessage,
 } from "./types.js";
 
@@ -45,12 +46,21 @@ function saveTmp(buf: Buffer, suggestedName?: string): string {
   return file;
 }
 
+/** Inbound media may carry either `cdn_media` (older) or `media` (newer). */
+function pickMedia(cdnMedia?: CDNMedia, media?: UploadMedia, aeskey?: string): CDNMedia | undefined {
+  if (cdnMedia && (cdnMedia.encrypt_query_param || cdnMedia.cdn_url)) return cdnMedia;
+  if (media && (media.encrypt_query_param || media.aes_key)) {
+    return { aes_key: media.aes_key ?? aeskey, encrypt_query_param: media.encrypt_query_param };
+  }
+  return cdnMedia;
+}
+
 function cdnOf(item: MessageItem): { media?: CDNMedia; name?: string } {
   switch (item.type) {
     case MessageItemType.IMAGE:
-      return { media: item.image_item?.cdn_media };
+      return { media: pickMedia(item.image_item?.cdn_media, item.image_item?.media, item.image_item?.aeskey) };
     case MessageItemType.FILE:
-      return { media: item.file_item?.cdn_media, name: item.file_item?.file_name };
+      return { media: pickMedia(item.file_item?.cdn_media, item.file_item?.media), name: item.file_item?.file_name };
     case MessageItemType.VOICE:
       return { media: item.voice_item?.media };
     case MessageItemType.VIDEO:

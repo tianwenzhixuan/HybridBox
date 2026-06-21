@@ -1,11 +1,9 @@
-import path from "node:path";
 import { SEND_MIN_INTERVAL_MS } from "../constants.js";
 import { log } from "../logger.js";
 import type { IlinkApi } from "./api.js";
 import { randomHex } from "./crypto.js";
 import { splitMessage } from "./split.js";
 import { uploadFile } from "./upload.js";
-import { guessMediaType } from "./media.js";
 import {
   MessageItemType,
   MessageState,
@@ -81,10 +79,22 @@ export class Sender {
     }
   }
 
-  /** Upload + send a local file (image/file/voice/video auto-detected). */
+  /** Upload + send a local file. Image vs file is auto-detected by extension. */
   async sendFile(toUserId: string, filePath: string, contextToken?: string): Promise<void> {
-    const mediaType = guessMediaType(filePath);
-    const item = await uploadFile(this.api, filePath, toUserId, mediaType, path.basename(filePath));
+    const media = await uploadFile(this.api, toUserId, filePath);
+    // The wire format expects the aes key as base64 of the hex string.
+    const aesKeyField = Buffer.from(media.aesKeyHex).toString("base64");
+    const wireMedia = {
+      encrypt_query_param: media.encryptQueryParam,
+      aes_key: aesKeyField,
+      encrypt_type: 1,
+    };
+    const item: MessageItem = media.isImage
+      ? { type: MessageItemType.IMAGE, image_item: { media: wireMedia, mid_size: media.rawSize } }
+      : {
+          type: MessageItemType.FILE,
+          file_item: { media: wireMedia, file_name: media.fileName, len: String(media.rawSize) },
+        };
     await this.sendOne(toUserId, [item], contextToken);
   }
 

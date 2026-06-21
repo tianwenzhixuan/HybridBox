@@ -29,6 +29,7 @@ Phone WeChat → WeChat ClawBot (ilink API) → HybridBox Daemon → Claude Code
 
 ### Features
 
+- 👥 **Multi-user (2–5)** – Each person binds their own ClawBot; isolated, parallel sessions all funnel into one Claude Code. First to bind becomes the owner.
 - 📱 **WeChat QR login** – Scan to bind your WeChat account as a bot
 - 💬 **Text conversations** – Messages forwarded to Claude Code, replies streamed back to WeChat
 - 🖼️ **Bidirectional file transfer** – Send images/files to Claude; generated files auto-pushed back to WeChat
@@ -84,7 +85,11 @@ pm2 save
 | `/prompt [text]` | View / set system prompt (`clear` to remove) |
 | `/send <path>` | Send a local file to WeChat |
 | `/stop` | Interrupt the current task |
+| `/myid` | Show your own user ID |
 | `/version` | Show version |
+| `/adduser` | **(owner)** Show a QR to invite a new member |
+| `/users` | **(owner)** List online members |
+| `/kick <index\|id>` | **(owner)** Remove a member |
 
 ### Data & Logs
 
@@ -176,6 +181,7 @@ MIT © 2025
    └────────────────────  流式回复 / 文件推送 ◀──────────────────────────────┘
 ```
 
+- 👥 **多用户（2–5 人）**：每人各自绑定自己的 ClawBot，独立会话并行汇入同一个 Claude Code；首位绑定者为机主
 - 📱 **微信扫码登录**（ClawBot），绑定后像加了个好友
 - 💬 **文字对话**：消息转发给 Claude Code，回复流式推回微信
 - 🖼️ **文件双向传输**：你能发图片/文件给 Claude；Claude 生成的文件自动推回微信
@@ -231,7 +237,11 @@ pm2 save
 | `/prompt [文本]` | 查看 / 设置系统提示（`clear` 清除） |
 | `/send <路径>` | 把本地文件发送到微信 |
 | `/stop` | 中断当前正在执行的任务 |
+| `/myid` | 查看自己的用户 ID |
 | `/version` | 查看版本 |
+| `/adduser` | **（机主）** 出二维码邀请新成员 |
+| `/users` | **（机主）** 查看在线成员 |
+| `/kick <序号\|ID>` | **（机主）** 移除成员 |
 
 ### 数据与日志
 

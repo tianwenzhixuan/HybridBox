@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { MAX_SEND_FILE_BYTES, VERSION } from "../constants.js";
-import { loadConfig, updateConfig } from "../config.js";
+import { updateConfig } from "../config.js";
 import type { SessionStore } from "../session.js";
 
 export interface CommandContext {
@@ -9,12 +9,18 @@ export interface CommandContext {
   args: string;
   /** The WeChat user ID of the sender. */
   userId: string;
-  /** True when the sender is the bot owner (may manage the whitelist). */
+  /** True when the sender is the bot owner (may manage users). */
   isOwner: boolean;
   /** Abort the active Claude query, if any. Returns true if something stopped. */
   requestStop: () => boolean;
   /** Upload + send a local file to the user. */
   sendLocalFile: (filePath: string) => Promise<void>;
+  /** Owner-only: start the scan-to-add-user flow (sends a QR, waits in bg). */
+  addUser: () => Promise<void>;
+  /** Owner-only: human-readable list of online users. */
+  listUsers: () => string;
+  /** Owner-only: remove a user by index or userId. */
+  kickUser: (selector: string) => Promise<string>;
 }
 
 /** Returns reply text, or null when the handler already responded itself. */
@@ -30,8 +36,13 @@ const HELP = `🤖 HybridBox 命令列表
 /prompt [文本]    查看 / 设置系统提示（"clear" 清除）
 /send <路径>      把本地文件发送到微信
 /stop            中断当前正在执行的任务
-/whitelist       管理白名单（add/remove/list/myid）
+/myid            查看自己的用户 ID
 /version         查看版本
+
+👑 机主专用：
+/adduser         生成二维码，邀请新成员加入
+/users           查看在线成员
+/kick <序号|ID>  移除某个成员
 
 💡 直接发送文字、图片或文件，即可与这台电脑上的 Claude Code 对话。`;
 
@@ -39,10 +50,13 @@ export const handleHelp: CommandHandler = async () => HELP;
 
 export const handleVersion: CommandHandler = async () => `HybridBox v${VERSION}`;
 
-export const handleStatus: CommandHandler = async ({ store }) => {
+export const handleMyId: CommandHandler = async ({ userId }) => `🆔 你的用户 ID：${userId}`;
+
+export const handleStatus: CommandHandler = async ({ store, isOwner }) => {
   const s = store.get();
   return [
     "📊 当前状态",
+    `身份：${isOwner ? "机主 👑" : "成员"}`,
     `工作目录：${s.workingDirectory}`,
     `模型：${s.model || "(默认)"}`,
     `系统提示：${s.systemPrompt ? "已自定义" : "(默认)"}`,
@@ -75,7 +89,6 @@ export const handleCwd: CommandHandler = async ({ store, args }) => {
     return `❌ 目录不存在：${resolved}`;
   }
   store.patch({ workingDirectory: resolved });
-  updateConfig({ workingDirectory: resolved });
   return `✅ 工作目录已切换到：${resolved}`;
 };
 
@@ -83,7 +96,6 @@ export const handleModel: CommandHandler = async ({ store, args }) => {
   const m = args.trim();
   if (!m) return `🧠 当前模型：${store.get().model || "(默认)"}`;
   store.patch({ model: m });
-  updateConfig({ model: m });
   return `✅ 模型已切换为：${m}`;
 };
 
@@ -92,51 +104,10 @@ export const handlePrompt: CommandHandler = async ({ store, args }) => {
   if (!t) return `📝 当前系统提示：${store.get().systemPrompt || "(默认)"}`;
   if (t === "clear" || t === "清除") {
     store.patch({ systemPrompt: undefined });
-    updateConfig({ systemPrompt: undefined });
     return "✅ 已清除自定义系统提示。";
   }
   store.patch({ systemPrompt: t });
-  updateConfig({ systemPrompt: t });
   return "✅ 已设置自定义系统提示。";
-};
-
-export const handleWhitelist: CommandHandler = async ({ args, userId, isOwner }) => {
-  const cfg = loadConfig();
-  const wl = cfg.whitelist ?? [];
-  const parts = args.trim().split(/\s+/);
-  const sub = parts[0]?.toLowerCase();
-
-  if (!sub || sub === "list") {
-    if (wl.length === 0) return "📋 白名单为空（允许所有人使用）。";
-    return `📋 白名单（${wl.length} 人）：\n${wl
-      .map((id, i) => `${i + 1}. ${id}${id === cfg.owner ? "（机主）" : ""}`)
-      .join("\n")}`;
-  }
-
-  if (sub === "myid") {
-    return `🆔 你的用户 ID：${userId}`;
-  }
-
-  if (sub === "add" || sub === "remove" || sub === "rm") {
-    if (!isOwner) return "⛔ 仅机主可修改白名单。";
-
-    if (sub === "add") {
-      const id = parts[1];
-      if (!id) return "用法：/whitelist add <用户ID>\n提示：发 /whitelist myid 查看自己的 ID";
-      if (wl.includes(id)) return `⚠️ ${id} 已在白名单中。`;
-      updateConfig({ whitelist: [...wl, id] });
-      return `✅ 已添加 ${id} 到白名单。`;
-    }
-
-    const id = parts[1];
-    if (!id) return "用法：/whitelist remove <用户ID>";
-    if (id === cfg.owner) return "⛔ 不能把机主移出白名单。";
-    if (!wl.includes(id)) return `⚠️ ${id} 不在白名单中。`;
-    updateConfig({ whitelist: wl.filter((x) => x !== id) });
-    return `✅ 已将 ${id} 从白名单移除。`;
-  }
-
-  return "用法：/whitelist [list|add|remove|myid]";
 };
 
 export const handleSend: CommandHandler = async ({ store, args, sendLocalFile }) => {
@@ -150,4 +121,22 @@ export const handleSend: CommandHandler = async ({ store, args, sendLocalFile })
   }
   await sendLocalFile(resolved);
   return null;
+};
+
+// ---- Owner-only ----
+
+export const handleAddUser: CommandHandler = async ({ isOwner, addUser }) => {
+  if (!isOwner) return "⛔ 仅机主可以添加用户。";
+  await addUser();
+  return null; // addUser sends its own messages (QR image + status)
+};
+
+export const handleUsers: CommandHandler = async ({ isOwner, listUsers }) => {
+  if (!isOwner) return "⛔ 仅机主可以查看成员列表。";
+  return listUsers();
+};
+
+export const handleKick: CommandHandler = async ({ isOwner, args, kickUser }) => {
+  if (!isOwner) return "⛔ 仅机主可以移除成员。";
+  return kickUser(args);
 };

@@ -39,11 +39,19 @@ export interface CDNMedia {
   cdn_url?: string;
 }
 
+/** Media descriptor we SEND when pushing a file/image (post-CDN-upload). */
+export interface UploadMedia {
+  encrypt_query_param?: string;
+  aes_key?: string;
+  encrypt_type?: number;
+}
+
 export interface MessageItem {
   type: MessageItemType;
   text_item?: { text: string };
   image_item?: {
     cdn_media?: CDNMedia;
+    media?: UploadMedia;
     aeskey?: string;
     url?: string;
     media_id?: string;
@@ -54,6 +62,7 @@ export interface MessageItem {
   voice_item?: { media?: CDNMedia; text?: string };
   file_item?: {
     cdn_media?: CDNMedia;
+    media?: UploadMedia;
     file_name?: string;
     len?: string;
   };

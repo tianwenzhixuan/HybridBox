@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { SESSIONS_DIR } from "./constants.js";
 import { loadConfig } from "./config.js";
@@ -10,6 +11,7 @@ export interface ChatMessage {
 }
 
 export interface Session {
+  /** The WeChat userId this session belongs to. */
   accountId: string;
   sdkSessionId?: string;
   previousSdkSessionId?: string;
@@ -22,15 +24,28 @@ export interface Session {
 
 const MAX_HISTORY = 100;
 
-function sessionFile(accountId: string): string {
-  return path.join(SESSIONS_DIR, `${accountId}.json`);
+/** Sanitize a userId for safe use in file/dir names. */
+function sanitize(id: string): string {
+  return id.replace(/[^A-Za-z0-9_.-]/g, "_") || "user";
 }
 
-function freshSession(accountId: string): Session {
+function sessionFile(userId: string): string {
+  return path.join(SESSIONS_DIR, `${sanitize(userId)}.json`);
+}
+
+function freshSession(userId: string): Session {
   const cfg = loadConfig();
+  // Each user gets their own working directory so parallel sessions don't
+  // clobber each other's files. Users can still /cwd into a shared project.
+  const dir = path.join(cfg.workingDirectory, sanitize(userId));
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    /* fall back to whatever exists */
+  }
   return {
-    accountId,
-    workingDirectory: cfg.workingDirectory,
+    accountId: userId,
+    workingDirectory: dir,
     model: cfg.model,
     systemPrompt: cfg.systemPrompt,
     state: "idle",
@@ -41,9 +56,10 @@ function freshSession(accountId: string): Session {
 export class SessionStore {
   private session: Session;
 
-  constructor(private accountId: string) {
-    const loaded = readJson<Session | null>(sessionFile(accountId), null);
-    this.session = loaded ?? freshSession(accountId);
+  // `userId` is the WeChat user this store belongs to.
+  constructor(private userId: string) {
+    const loaded = readJson<Session | null>(sessionFile(userId), null);
+    this.session = loaded ?? freshSession(userId);
     // Recover from a crash mid-processing.
     if (this.session.state !== "idle") this.session.state = "idle";
     this.persist();
@@ -54,7 +70,7 @@ export class SessionStore {
   }
 
   private persist() {
-    writeJson(sessionFile(this.accountId), this.session);
+    writeJson(sessionFile(this.userId), this.session);
   }
 
   patch(partial: Partial<Session>): Session {
@@ -86,7 +102,7 @@ export class SessionStore {
 
   /** Full reset back to config defaults. */
   reset() {
-    this.session = freshSession(this.accountId);
+    this.session = freshSession(this.userId);
     this.persist();
   }
 }
