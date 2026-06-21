@@ -1,6 +1,6 @@
 import { log } from "./logger.js";
+import { ensureOwnerSeeded, loadConfig } from "./config.js";
 import { Engine } from "./engine.js";
-import { SessionStore } from "./session.js";
 import { createApi } from "./wechat/api.js";
 import { loadAccount } from "./wechat/accounts.js";
 import { createMonitor } from "./wechat/monitor.js";
@@ -14,10 +14,13 @@ export async function runDaemon(): Promise<void> {
     process.exit(1);
   }
 
+  // Default the bot to "owner-only": record the bound account as owner and
+  // ensure it is whitelisted, so an empty whitelist never means "everyone".
+  ensureOwnerSeeded(account.userId);
+
   const api = createApi(account);
-  const store = new SessionStore(account.accountId);
   const sender = new Sender(api);
-  const engine = new Engine(api, sender, store);
+  const engine = new Engine(api, sender);
   const monitor = createMonitor(api, { onMessage: (m) => engine.enqueue(m) });
 
   let shuttingDown = false;
@@ -33,8 +36,9 @@ export async function runDaemon(): Promise<void> {
   process.on("uncaughtException", (e) => log.error("uncaughtException:", e));
   process.on("unhandledRejection", (e) => log.error("unhandledRejection:", e));
 
-  log.info(`HybridBox daemon started. Bot=${account.accountId}, workdir=${store.get().workingDirectory}`);
-  console.log("HybridBox 正在运行。给微信机器人发消息即可。按 Ctrl+C 退出。");
+  const cfg = loadConfig();
+  log.info(`HybridBox daemon started. Bot=${account.accountId}, workdir=${cfg.workingDirectory}`);
+  console.log("HybridBox 正在运行（多用户隔离模式）。给微信机器人发消息即可。按 Ctrl+C 退出。");
 
   await monitor.run();
 }

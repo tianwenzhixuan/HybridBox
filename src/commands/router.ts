@@ -9,6 +9,7 @@ import {
   handleStatus,
   handleStop,
   handleVersion,
+  handleWhitelist,
   type CommandContext,
   type CommandHandler,
 } from "./handlers.js";
@@ -36,6 +37,8 @@ const COMMANDS: Record<string, CommandHandler> = {
   model: handleModel,
   prompt: handlePrompt,
   send: handleSend,
+  whitelist: handleWhitelist,
+  wl: handleWhitelist,
   version: handleVersion,
   v: handleVersion,
 };

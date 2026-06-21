@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { KEEPALIVE_CHECK_MS, KEEPALIVE_IDLE_MS, MAX_SEND_FILE_BYTES } from "./constants.js";
+import { getOwnerId, loadConfig } from "./config.js";
 import { log } from "./logger.js";
 import { runClaude } from "./claude/provider.js";
 import { SessionStore } from "./session.js";
@@ -19,53 +20,93 @@ const WAIT_MESSAGES = [
   "📡 仍在运行，稍等片刻…",
 ];
 
+interface UserContext {
+  store: SessionStore;
+  queue: WeixinMessage[];
+  draining: boolean;
+  activeAbort: AbortController | null;
+}
+
 /**
- * The heart of HybridBox: serialises inbound messages, routes commands,
- * drives Claude Code, streams output back, and auto-pushes generated files.
+ * The heart of HybridBox: serialises inbound messages per user, routes
+ * commands, drives Claude Code, streams output back, and auto-pushes
+ * generated files. Each WeChat user gets an isolated session and queue.
  */
 export class Engine {
-  private queue: WeixinMessage[] = [];
-  private draining = false;
-  private activeAbort: AbortController | null = null;
+  private users = new Map<string, UserContext>();
+  /** Unknown users we've already alerted the owner about (dedup, per-process). */
+  private notifiedUnknown = new Set<string>();
 
   constructor(
     private api: IlinkApi,
     private sender: Sender,
-    private store: SessionStore,
   ) {}
+
+  private getOrCreate(userId: string): UserContext {
+    let uctx = this.users.get(userId);
+    if (!uctx) {
+      uctx = {
+        store: new SessionStore(userId),
+        queue: [],
+        draining: false,
+        activeAbort: null,
+      };
+      this.users.set(userId, uctx);
+      log.info(`New user context created: ${userId}`);
+    }
+    return uctx;
+  }
 
   /** Called by the monitor for each inbound user message. */
   enqueue(msg: WeixinMessage): void {
+    const userId = msg.from_user_id ?? "";
+    if (!userId) return;
+
+    if (!this.isAllowed(userId)) {
+      log.warn(`Blocked message from unlisted user: ${userId}`);
+      void this.sender
+        .sendText(
+          userId,
+          `⛔ 你暂时没有使用权限。\n请把下面这行你的用户 ID 转发给机主，由机主把你加入白名单：\n\n${userId}`,
+          msg.context_token,
+        )
+        .catch(() => {});
+      this.notifyOwnerOfRequest(userId);
+      return;
+    }
+
+    const uctx = this.getOrCreate(userId);
+
     // Priority interrupt: /stop and /clear should not wait behind a long task.
     const quickText = firstText(msg);
     const cmd = quickText ? parseCommand(quickText) : null;
-    if (cmd && (cmd.name === "stop" || cmd.name === "clear") && this.store.get().state === "processing") {
-      void this.handlePriority(msg, cmd.name);
+    if (cmd && (cmd.name === "stop" || cmd.name === "clear") && uctx.store.get().state === "processing") {
+      void this.handlePriority(uctx, msg, cmd.name);
       return;
     }
-    this.queue.push(msg);
-    void this.drain();
+    uctx.queue.push(msg);
+    void this.drain(uctx);
   }
 
-  private async handlePriority(msg: WeixinMessage, name: string): Promise<void> {
+  private async handlePriority(uctx: UserContext, msg: WeixinMessage, name: string): Promise<void> {
     const userId = msg.from_user_id ?? "";
     const ctxToken = msg.context_token;
-    this.requestStop();
-    if (name === "clear") this.store.clear();
-    this.queue = [];
+    this.requestStop(uctx);
+    if (name === "clear") uctx.store.clear();
+    uctx.queue = [];
     await this.sender
       .sendText(userId, name === "clear" ? "✅ 已中断并开启新会话。" : "🛑 已中断当前任务。", ctxToken)
       .catch((e) => log.error(e));
   }
 
-  private async drain(): Promise<void> {
-    if (this.draining) return;
-    this.draining = true;
+  private async drain(uctx: UserContext): Promise<void> {
+    if (uctx.draining) return;
+    uctx.draining = true;
     try {
-      while (this.queue.length) {
-        const msg = this.queue.shift()!;
+      while (uctx.queue.length) {
+        const msg = uctx.queue.shift()!;
         try {
-          await this.handle(msg);
+          await this.handle(uctx, msg);
         } catch (e) {
           log.error("Message handling failed:", (e as Error).message);
           await this.sender
@@ -74,20 +115,22 @@ export class Engine {
         }
       }
     } finally {
-      this.draining = false;
+      uctx.draining = false;
     }
   }
 
-  private async handle(msg: WeixinMessage): Promise<void> {
+  private async handle(uctx: UserContext, msg: WeixinMessage): Promise<void> {
     const inbound = await extractInbound(msg);
     log.info(`Inbound [${inbound.kind}] from ${inbound.fromUserId}: ${inbound.text.slice(0, 80)}`);
 
     const cmd = parseCommand(inbound.text);
     if (cmd && isKnownCommand(cmd.name)) {
       const ctx: CommandContext = {
-        store: this.store,
+        store: uctx.store,
         args: cmd.args,
-        requestStop: () => this.requestStop(),
+        userId: inbound.fromUserId,
+        isOwner: inbound.fromUserId === getOwnerId(),
+        requestStop: () => this.requestStop(uctx),
         sendLocalFile: (p) => this.sender.sendFile(inbound.fromUserId, p, inbound.contextToken),
       };
       const { reply } = await dispatchCommand(cmd, ctx);
@@ -96,15 +139,15 @@ export class Engine {
     }
 
     if (!inbound.text && inbound.attachments.length === 0) return;
-    await this.runClaudeFor(inbound);
+    await this.runClaudeFor(uctx, inbound);
   }
 
-  private async runClaudeFor(inbound: InboundMessage): Promise<void> {
-    this.store.setState("processing");
-    this.store.addHistory("user", inbound.text || `[${inbound.kind}]`);
+  private async runClaudeFor(uctx: UserContext, inbound: InboundMessage): Promise<void> {
+    uctx.store.setState("processing");
+    uctx.store.addHistory("user", inbound.text || `[${inbound.kind}]`);
 
     const abort = new AbortController();
-    this.activeAbort = abort;
+    uctx.activeAbort = abort;
     const stopTyping = this.sender.startTyping(inbound.contextToken);
     const flusher = new StreamFlusher(this.sender, inbound.fromUserId, inbound.contextToken);
 
@@ -119,44 +162,45 @@ export class Engine {
 
     let full = "";
     try {
-      const usedResume = this.store.get().sdkSessionId;
-      let result = await this.invoke(inbound, flusher, abort.signal, (t) => (full += t));
+      const usedResume = uctx.store.get().sdkSessionId;
+      let result = await this.invoke(uctx, inbound, flusher, abort.signal, (t) => (full += t));
 
       // Resume fallback: a corrupted session id can fail the first run.
       if (result.error && result.error !== "__ABORTED__" && usedResume) {
         log.warn("Claude run failed with --resume; retrying with a fresh session.");
-        this.store.patch({ sdkSessionId: undefined });
+        uctx.store.patch({ sdkSessionId: undefined });
         full = "";
-        result = await this.invoke(inbound, flusher, abort.signal, (t) => (full += t));
+        result = await this.invoke(uctx, inbound, flusher, abort.signal, (t) => (full += t));
       }
 
       await flusher.flushAll();
 
-      if (result.sessionId) this.store.patch({ sdkSessionId: result.sessionId });
+      if (result.sessionId) uctx.store.patch({ sdkSessionId: result.sessionId });
 
       if (result.error === "__ABORTED__") {
         // handlePriority already messaged the user.
       } else if (result.error) {
         await this.sender.sendText(inbound.fromUserId, `❌ ${result.error}`, inbound.contextToken);
       } else {
-        this.store.addHistory("assistant", full);
+        uctx.store.addHistory("assistant", full);
         await this.autoPushFiles(full, inbound);
       }
     } finally {
       clearInterval(keepalive);
       stopTyping();
-      this.activeAbort = null;
-      this.store.setState("idle");
+      uctx.activeAbort = null;
+      uctx.store.setState("idle");
     }
   }
 
   private invoke(
+    uctx: UserContext,
     inbound: InboundMessage,
     flusher: StreamFlusher,
     signal: AbortSignal,
     collect: (t: string) => void,
   ) {
-    const s = this.store.get();
+    const s = uctx.store.get();
     const images = inbound.attachments.filter((p) => /\.(png|jpe?g|gif|webp|bmp)$/i.test(p));
     const otherFiles = inbound.attachments.filter((p) => !images.includes(p));
 
@@ -182,16 +226,35 @@ export class Engine {
           collect(t);
           flusher.push(t);
         },
-        onSessionId: (id) => this.store.patch({ sdkSessionId: id }),
+        onSessionId: (id) => uctx.store.patch({ sdkSessionId: id }),
         onBlockEnd: () => flusher.flushOnBoundary(),
       },
     );
   }
 
-  /** Abort the running Claude query, if any. */
-  requestStop(): boolean {
-    if (this.activeAbort) {
-      this.activeAbort.abort();
+  private isAllowed(userId: string): boolean {
+    if (userId === getOwnerId()) return true;
+    const wl = loadConfig().whitelist;
+    return !wl || wl.length === 0 || wl.includes(userId);
+  }
+
+  /** Proactively tell the owner a new user wants access (once per user). */
+  private notifyOwnerOfRequest(userId: string): void {
+    if (this.notifiedUnknown.has(userId)) return;
+    this.notifiedUnknown.add(userId);
+    const owner = getOwnerId();
+    if (!owner || owner === userId) return;
+    void this.sender
+      .sendText(
+        owner,
+        `🔔 有新用户想使用 HybridBox。\n用户 ID：${userId}\n\n同意就回复（可直接复制）：\n/whitelist add ${userId}`,
+      )
+      .catch(() => {});
+  }
+
+  private requestStop(uctx: UserContext): boolean {
+    if (uctx.activeAbort) {
+      uctx.activeAbort.abort();
       return true;
     }
     return false;
